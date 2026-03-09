@@ -4,33 +4,92 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>OpenMap</title>
-<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.1.2/dist/maplibre-gl.css">
+
+<!-- MapLibre GL JS -->
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
+
 <style>
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
-  
+  *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    overflow: hidden;
+    background: #1a1a2e;
+  }
+
   #map { position: absolute; inset: 0; }
 
-  /* Search bar */
+  /* ── Loading overlay ──────────────────────────────────────────────── */
+  #loading-overlay {
+    position: fixed;
+    inset: 0;
+    background: #1a1a2e;
+    z-index: 1000;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    transition: opacity 0.5s ease;
+  }
+  #loading-overlay.fade-out {
+    opacity: 0;
+    pointer-events: none;
+  }
+  .loading-icon { font-size: 48px; animation: bounce 1.5s infinite; }
+  .loading-title { color: white; font-size: 24px; font-weight: 700; }
+  .loading-sub { color: rgba(255,255,255,0.6); font-size: 14px; }
+  @keyframes bounce {
+    0%, 100% { transform: translateY(0); }
+    50%       { transform: translateY(-10px); }
+  }
+
+  /* ── Mode badge ───────────────────────────────────────────────────── */
+  #mode-badge {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    z-index: 20;
+    background: rgba(0,0,0,0.65);
+    backdrop-filter: blur(8px);
+    color: white;
+    font-size: 11px;
+    padding: 4px 10px;
+    border-radius: 20px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    cursor: help;
+    user-select: none;
+  }
+  .badge-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: #22c55e;
+    flex-shrink: 0;
+  }
+  .badge-dot.orange { background: #f59e0b; }
+  .badge-dot.red    { background: #ef4444; }
+
+  /* ── Search ───────────────────────────────────────────────────────── */
   .search-container {
     position: absolute;
     top: 16px;
     left: 50%;
     transform: translateX(-50%);
     z-index: 10;
-    width: min(500px, calc(100vw - 32px));
+    width: min(520px, calc(100vw - 32px));
   }
   .search-box {
     display: flex;
     background: white;
-    border-radius: 24px;
-    box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+    border-radius: 28px;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.2);
     overflow: hidden;
     transition: box-shadow 0.2s;
   }
-  .search-box:focus-within {
-    box-shadow: 0 4px 20px rgba(0,0,0,0.25);
-  }
+  .search-box:focus-within { box-shadow: 0 6px 30px rgba(0,0,0,0.3); }
   .search-box input {
     flex: 1;
     border: none;
@@ -46,16 +105,16 @@
     cursor: pointer;
     font-size: 18px;
     color: #666;
+    transition: color 0.15s;
   }
   .search-box button:hover { color: #1a73e8; }
 
-  /* Search results */
   .search-results {
     background: white;
     border-radius: 16px;
     margin-top: 8px;
-    box-shadow: 0 2px 12px rgba(0,0,0,0.15);
-    max-height: 400px;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+    max-height: 380px;
     overflow-y: auto;
     display: none;
   }
@@ -64,49 +123,91 @@
     padding: 12px 20px;
     cursor: pointer;
     border-bottom: 1px solid #f0f0f0;
-    transition: background 0.15s;
+    transition: background 0.12s;
   }
-  .search-result:hover { background: #f5f5f5; }
+  .search-result:hover { background: #f5f7ff; }
   .search-result:last-child { border-bottom: none; }
-  .search-result .name { font-weight: 600; font-size: 14px; }
-  .search-result .detail { font-size: 12px; color: #666; margin-top: 2px; }
+  .search-result .name { font-weight: 600; font-size: 14px; color: #1a1a2e; }
+  .search-result .detail { font-size: 12px; color: #888; margin-top: 2px; }
+  .search-no-results {
+    padding: 16px 20px;
+    font-size: 14px;
+    color: #888;
+    text-align: center;
+  }
 
-  /* Routing panel */
+  /* ── Route panel ──────────────────────────────────────────────────── */
   .route-panel {
     position: absolute;
-    top: 16px;
+    top: 80px;
     right: 16px;
     z-index: 10;
     background: white;
     border-radius: 16px;
-    box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+    box-shadow: 0 4px 20px rgba(0,0,0,0.15);
     padding: 16px;
-    width: 280px;
+    width: 290px;
     display: none;
+    transition: box-shadow 0.2s;
   }
   .route-panel.active { display: block; }
-  .route-panel h3 { font-size: 14px; margin-bottom: 12px; color: #333; }
+  .route-panel h3 {
+    font-size: 14px;
+    font-weight: 700;
+    margin-bottom: 12px;
+    color: #1a1a2e;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
   .route-panel input {
     width: 100%;
-    border: 1px solid #ddd;
+    border: 1.5px solid #e8e8e8;
     border-radius: 8px;
     padding: 10px 12px;
     font-size: 14px;
     margin-bottom: 8px;
     outline: none;
+    transition: border-color 0.15s;
   }
   .route-panel input:focus { border-color: #1a73e8; }
+  .route-btn {
+    width: 100%;
+    padding: 10px;
+    background: #1a73e8;
+    color: white;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 600;
+    transition: background 0.15s;
+  }
+  .route-btn:hover { background: #1557b0; }
+  .route-btn:disabled { background: #aaa; cursor: not-allowed; }
   .route-info {
     margin-top: 12px;
-    padding: 10px;
+    padding: 10px 14px;
     background: #f0f7ff;
     border-radius: 8px;
     font-size: 13px;
     display: none;
+    border-left: 3px solid #1a73e8;
   }
   .route-info.active { display: block; }
+  .route-warning {
+    margin-top: 8px;
+    padding: 8px 12px;
+    background: #fff7ed;
+    border-radius: 8px;
+    font-size: 12px;
+    color: #92400e;
+    border-left: 3px solid #f59e0b;
+    display: none;
+  }
+  .route-warning.active { display: block; }
 
-  /* Controls */
+  /* ── Controls ─────────────────────────────────────────────────────── */
   .controls {
     position: absolute;
     bottom: 32px;
@@ -122,7 +223,7 @@
     background: white;
     border: none;
     border-radius: 12px;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.12);
+    box-shadow: 0 2px 10px rgba(0,0,0,0.12);
     cursor: pointer;
     font-size: 20px;
     display: flex;
@@ -130,18 +231,44 @@
     justify-content: center;
     transition: all 0.15s;
   }
-  .ctrl-btn:hover { background: #f5f5f5; transform: scale(1.05); }
+  .ctrl-btn:hover  { background: #f0f7ff; transform: scale(1.05); }
   .ctrl-btn:active { transform: scale(0.95); }
+  .ctrl-btn.active { background: #e8f0fe; box-shadow: 0 2px 10px rgba(26,115,232,0.3); }
 
-  /* Attribution */
+  /* ── Style switcher ───────────────────────────────────────────────── */
+  .style-panel {
+    position: absolute;
+    bottom: 32px;
+    left: 16px;
+    z-index: 10;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .style-btn {
+    background: white;
+    border: 2px solid transparent;
+    border-radius: 8px;
+    padding: 6px 12px;
+    font-size: 12px;
+    cursor: pointer;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    transition: all 0.15s;
+    white-space: nowrap;
+  }
+  .style-btn:hover  { background: #f0f7ff; }
+  .style-btn.active { border-color: #1a73e8; background: #e8f0fe; }
+
+  /* ── Attribution ──────────────────────────────────────────────────── */
   .attribution {
     position: absolute;
     bottom: 4px;
     left: 4px;
     font-size: 10px;
-    color: #666;
-    background: rgba(255,255,255,0.8);
-    padding: 2px 6px;
+    color: #555;
+    background: rgba(255,255,255,0.85);
+    backdrop-filter: blur(4px);
+    padding: 3px 8px;
     border-radius: 4px;
     z-index: 5;
   }
@@ -150,90 +277,227 @@
 </head>
 <body>
 
+<!-- Loading overlay -->
+<div id="loading-overlay">
+  <div class="loading-icon">🗺️</div>
+  <div class="loading-title">OpenMap</div>
+  <div class="loading-sub">Loading map…</div>
+</div>
+
 <div id="map"></div>
 
+<!-- Mode badge -->
+<div id="mode-badge" title="Tile source">
+  <span class="badge-dot" id="badge-dot"></span>
+  <span id="badge-text">Loading…</span>
+</div>
+
+<!-- Search -->
 <div class="search-container">
   <div class="search-box">
-    <input type="text" id="search-input" placeholder="Suchen..." autocomplete="off">
-    <button onclick="doSearch()" title="Suchen">🔍</button>
+    <input type="text" id="search-input" placeholder="Ort, Adresse suchen…" autocomplete="off" spellcheck="false">
+    <button id="search-btn" onclick="doSearch()" title="Suchen">🔍</button>
   </div>
   <div class="search-results" id="search-results"></div>
 </div>
 
+<!-- Controls -->
 <div class="controls">
-  <button class="ctrl-btn" onclick="zoomIn()" title="Reinzoomen">+</button>
-  <button class="ctrl-btn" onclick="zoomOut()" title="Rauszoomen">−</button>
+  <button class="ctrl-btn" onclick="map.zoomIn({ duration: 300 })" title="Reinzoomen">+</button>
+  <button class="ctrl-btn" onclick="map.zoomOut({ duration: 300 })" title="Rauszoomen">−</button>
   <button class="ctrl-btn" onclick="geolocate()" title="Mein Standort">📍</button>
-  <button class="ctrl-btn" onclick="toggleRoute()" title="Route">🧭</button>
+  <button class="ctrl-btn" id="route-toggle-btn" onclick="toggleRoute()" title="Route planen">🧭</button>
 </div>
 
+<!-- Route panel -->
 <div class="route-panel" id="route-panel">
   <h3>🧭 Route planen</h3>
-  <input type="text" id="route-from" placeholder="Von...">
-  <input type="text" id="route-to" placeholder="Nach...">
-  <button onclick="calcRoute()" style="width:100%;padding:10px;background:#1a73e8;color:white;border:none;border-radius:8px;cursor:pointer;font-size:14px;font-weight:600">Route berechnen</button>
+  <input type="text" id="route-from" placeholder="Von…">
+  <input type="text" id="route-to" placeholder="Nach…">
+  <button class="route-btn" id="route-btn" onclick="calcRoute()">Route berechnen</button>
   <div class="route-info" id="route-info"></div>
+  <div class="route-warning" id="route-warning"></div>
 </div>
 
+<!-- Style switcher (only shown when PMTiles are available) -->
+<div class="style-panel" id="style-panel" style="display:none">
+  <button class="style-btn active" onclick="setFlavor('light')" id="style-light">☀️ Hell</button>
+  <button class="style-btn" onclick="setFlavor('dark')"  id="style-dark">🌙 Dunkel</button>
+  <button class="style-btn" onclick="setFlavor('white')" id="style-white">⬜ Weiß</button>
+</div>
+
+<!-- Attribution -->
 <div class="attribution">
-  © <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors
+  © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors
+  <span id="attr-protomaps"> | <a href="https://protomaps.com" target="_blank" rel="noopener">Protomaps</a></span>
 </div>
 
-<script src="https://unpkg.com/maplibre-gl@4.1.2/dist/maplibre-gl.js"></script>
-<script>
-// ========== CONFIG ==========
-// When self-hosted, tiles come from /tiles/
-// Fallback to free tile servers for development
-const TILE_URL = '/tiles/data/germany/{z}/{x}/{y}.pbf';
-const SEARCH_URL = '/search';
-const ROUTE_URL = '/route/route/v1/driving';
+<!-- MapLibre GL JS -->
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+<!-- PMTiles protocol for MapLibre (reads .pmtiles files directly) -->
+<script src="https://unpkg.com/pmtiles@3.2.1/dist/pmtiles.js"></script>
+<!-- Protomaps basemap styles -->
+<script src="https://unpkg.com/@protomaps/basemaps@5/dist/basemaps.js"></script>
 
-// Free fallback style (if self-hosted tiles aren't available)
-const STYLE = {
-  version: 8,
-  name: 'OpenMap',
-  sources: {
-    'osm-tiles': {
-      type: 'raster',
-      tiles: [
-        'https://tile.openstreetmap.org/{z}/{x}/{y}.png'
-      ],
-      tileSize: 256,
-      attribution: '© OpenStreetMap contributors'
-    }
-  },
-  layers: [{
-    id: 'osm',
-    type: 'raster',
-    source: 'osm-tiles',
-    minzoom: 0,
-    maxzoom: 19
-  }]
+<script>
+// =============================================================================
+//  CONFIG — loaded from /config.js (written by init.sh), with defaults
+// =============================================================================
+// Fallback defaults (overridden by config.js if available)
+window.OPENMAP_CONFIG = window.OPENMAP_CONFIG || {
+  tilesMode: 'osm',
+  tilesAvailable: false,
+  photonAvailable: false,
+  osrmAvailable: false,
+  region: 'germany',
 };
 
-// ========== MAP INIT ==========
+const CFG = window.OPENMAP_CONFIG;
+
+// ── Public fallback endpoints ──────────────────────────────────────────────
+const FALLBACK = {
+  search: 'https://photon.komoot.io/api',
+  reverse: 'https://photon.komoot.io/reverse',
+  route:   'https://router.project-osrm.org/route/v1/driving',
+};
+
+// ── Self-hosted endpoints ──────────────────────────────────────────────────
+const LOCAL = {
+  search:  '/search',
+  reverse: '/reverse',
+  route:   '/route/route/v1/driving',
+  pmtiles: '/tiles/map.pmtiles',
+};
+
+// =============================================================================
+//  PMTiles Protocol registration
+// =============================================================================
+if (typeof pmtiles !== 'undefined') {
+  const protocol = new pmtiles.Protocol();
+  maplibregl.addProtocol('pmtiles', protocol.tile.bind(protocol));
+}
+
+// =============================================================================
+//  MAP STYLES
+// =============================================================================
+let currentFlavor = 'light';
+
+function buildOsmStyle() {
+  document.getElementById('attr-protomaps').style.display = 'none';
+  return {
+    version: 8,
+    name: 'OpenMap (OSM Raster)',
+    sources: {
+      'osm': {
+        type: 'raster',
+        tiles: [
+          'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+        ],
+        tileSize: 256,
+        maxzoom: 19,
+        attribution: '© OpenStreetMap contributors',
+      }
+    },
+    layers: [{
+      id: 'osm',
+      type: 'raster',
+      source: 'osm',
+      minzoom: 0,
+      maxzoom: 20,
+    }]
+  };
+}
+
+function buildPmtilesStyle(flavor) {
+  flavor = flavor || currentFlavor;
+  document.getElementById('attr-protomaps').style.display = '';
+  return {
+    version: 8,
+    name: 'OpenMap (PMTiles)',
+    glyphs: 'https://protomaps.github.io/basemaps-assets/fonts/{fontstack}/{range}.pbf',
+    sprite: `https://protomaps.github.io/basemaps-assets/sprites/v4/${flavor}`,
+    sources: {
+      'protomaps': {
+        type: 'vector',
+        url: `pmtiles://${LOCAL.pmtiles}`,
+        attribution: '© <a href="https://protomaps.com">Protomaps</a> | © OpenStreetMap contributors',
+      }
+    },
+    layers: basemaps.layers('protomaps', basemaps.namedFlavor(flavor), { lang: 'de' }),
+  };
+}
+
+function getInitialStyle() {
+  if (CFG.tilesAvailable && CFG.tilesMode === 'pmtiles' && typeof basemaps !== 'undefined') {
+    return buildPmtilesStyle('light');
+  }
+  return buildOsmStyle();
+}
+
+// =============================================================================
+//  MAP INIT
+// =============================================================================
 const map = new maplibregl.Map({
   container: 'map',
-  style: STYLE,
-  center: [8.4660, 49.4874], // Mannheim
-  zoom: 13,
+  style: getInitialStyle(),
+  center: [10.45, 51.17], // Germany center
+  zoom: 6,
   attributionControl: false,
+  hash: true,  // persist map position in URL hash
 });
 
-map.addControl(new maplibregl.NavigationControl(), 'bottom-right');
+// Update mode badge
+function updateBadge() {
+  const dot  = document.getElementById('badge-dot');
+  const text = document.getElementById('badge-text');
+  if (CFG.tilesAvailable && CFG.tilesMode === 'pmtiles') {
+    dot.className = 'badge-dot';
+    text.textContent = 'Self-hosted PMTiles';
+    document.getElementById('style-panel').style.display = 'flex';
+  } else {
+    dot.className = 'badge-dot orange';
+    text.textContent = 'Public OSM tiles';
+  }
+}
 
-// ========== SEARCH ==========
-let searchTimeout;
-const searchInput = document.getElementById('search-input');
+map.on('load', () => {
+  updateBadge();
+  // Remove loading overlay
+  const overlay = document.getElementById('loading-overlay');
+  overlay.classList.add('fade-out');
+  setTimeout(() => overlay.remove(), 600);
+});
+
+map.on('error', (e) => {
+  console.warn('Map error:', e.error?.message || e);
+});
+
+// =============================================================================
+//  STYLE SWITCHER (only when PMTiles available)
+// =============================================================================
+function setFlavor(flavor) {
+  if (!CFG.tilesAvailable) return;
+  currentFlavor = flavor;
+  ['light','dark','white'].forEach(f => {
+    document.getElementById(`style-${f}`)?.classList.toggle('active', f === flavor);
+  });
+  map.setStyle(buildPmtilesStyle(flavor));
+}
+
+// =============================================================================
+//  SEARCH
+// =============================================================================
+let searchTimeout = null;
+const searchInput   = document.getElementById('search-input');
 const searchResults = document.getElementById('search-results');
+let activeMarker = null;
 
 searchInput.addEventListener('input', () => {
   clearTimeout(searchTimeout);
-  searchTimeout = setTimeout(doSearch, 300);
+  searchTimeout = setTimeout(doSearch, 350);
 });
-
 searchInput.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter') doSearch();
+  if (e.key === 'Enter') { clearTimeout(searchTimeout); doSearch(); }
   if (e.key === 'Escape') {
     searchResults.classList.remove('active');
     searchInput.blur();
@@ -247,177 +511,238 @@ async function doSearch() {
     return;
   }
 
+  let features = [];
+  const params = `q=${encodeURIComponent(q)}&limit=8&lang=de`;
+
+  // Try self-hosted Photon first, then public
+  if (CFG.photonAvailable) {
+    features = await fetchSearch(`${LOCAL.search}?${params}`);
+  }
+  if (!features.length) {
+    features = await fetchSearch(`${FALLBACK.search}?${params}`);
+  }
+
+  renderResults(features);
+}
+
+async function fetchSearch(url) {
   try {
-    // Try self-hosted Photon first, fallback to public
-    let url = `${SEARCH_URL}?q=${encodeURIComponent(q)}&limit=8&lang=de`;
-    let res = await fetch(url).catch(() => null);
-    
-    if (!res || !res.ok) {
-      // Fallback to public Photon
-      url = `https://photon.komoot.io/api?q=${encodeURIComponent(q)}&limit=8&lang=de`;
-      res = await fetch(url);
-    }
-    
+    const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
+    if (!res.ok) return [];
     const data = await res.json();
-    showResults(data.features || []);
-  } catch (err) {
-    console.error('Search error:', err);
+    return data.features || [];
+  } catch {
+    return [];
   }
 }
 
-function showResults(features) {
+function renderResults(features) {
   if (!features.length) {
-    searchResults.classList.remove('active');
+    searchResults.innerHTML = '<div class="search-no-results">Keine Ergebnisse gefunden</div>';
+    searchResults.classList.add('active');
     return;
   }
-
   searchResults.innerHTML = features.map(f => {
-    const p = f.properties;
-    const name = p.name || p.street || 'Unbekannt';
-    const parts = [p.street, p.city, p.state, p.country].filter(Boolean);
+    const p = f.properties || {};
+    const name = p.name || p.street || p.city || 'Unbekannt';
+    const parts = [p.street, p.housenumber, p.city, p.state, p.country].filter(Boolean);
     const detail = parts.join(', ');
-    const [lon, lat] = f.geometry.coordinates;
-    return `<div class="search-result" onclick="goTo(${lat}, ${lon}, '${name.replace(/'/g, "\\'")}')">
-      <div class="name">${name}</div>
-      <div class="detail">${detail}</div>
+    const [lon, lat] = f.geometry?.coordinates || [0, 0];
+    const escapedName = name.replace(/'/g, "\\'").replace(/"/g, '&quot;');
+    return `<div class="search-result" onclick="goTo(${lat},${lon},'${escapedName}')">
+      <div class="name">${escapeHtml(name)}</div>
+      ${detail ? `<div class="detail">${escapeHtml(detail)}</div>` : ''}
     </div>`;
   }).join('');
-
   searchResults.classList.add('active');
 }
 
 function goTo(lat, lon, name) {
   searchResults.classList.remove('active');
   searchInput.value = name;
-  
-  // Remove old markers
-  document.querySelectorAll('.maplibregl-marker').forEach(m => m.remove());
-  
-  new maplibregl.Marker({ color: '#e74c3c' })
+
+  activeMarker?.remove();
+  activeMarker = new maplibregl.Marker({ color: '#e74c3c' })
     .setLngLat([lon, lat])
-    .setPopup(new maplibregl.Popup().setText(name))
+    .setPopup(new maplibregl.Popup({ offset: 25 }).setText(name))
     .addTo(map);
-  
+
   map.flyTo({ center: [lon, lat], zoom: 15, duration: 1500 });
 }
 
-// ========== ROUTING ==========
+// =============================================================================
+//  GEOLOCATION
+// =============================================================================
+let geoMarker = null;
+function geolocate() {
+  if (!navigator.geolocation) {
+    alert('Geolocation wird von Ihrem Browser nicht unterstützt.');
+    return;
+  }
+  navigator.geolocation.getCurrentPosition(
+    pos => {
+      const { longitude: lon, latitude: lat } = pos.coords;
+      geoMarker?.remove();
+      geoMarker = new maplibregl.Marker({ color: '#1a73e8' })
+        .setLngLat([lon, lat])
+        .setPopup(new maplibregl.Popup({ offset: 25 }).setText('Mein Standort'))
+        .addTo(map);
+      map.flyTo({ center: [lon, lat], zoom: 14, duration: 1500 });
+    },
+    err => {
+      console.error('Geolocation error:', err);
+      alert('Standort konnte nicht ermittelt werden: ' + err.message);
+    },
+    { timeout: 10000, maximumAge: 60000 }
+  );
+}
+
+// =============================================================================
+//  ROUTING
+// =============================================================================
 function toggleRoute() {
-  document.getElementById('route-panel').classList.toggle('active');
+  const panel = document.getElementById('route-panel');
+  const btn   = document.getElementById('route-toggle-btn');
+  const isActive = panel.classList.toggle('active');
+  btn.classList.toggle('active', isActive);
 }
 
 async function calcRoute() {
-  const fromInput = document.getElementById('route-from').value;
-  const toInput = document.getElementById('route-to').value;
-  
-  if (!fromInput || !toInput) return;
+  const fromVal = document.getElementById('route-from').value.trim();
+  const toVal   = document.getElementById('route-to').value.trim();
+  const info    = document.getElementById('route-info');
+  const warning = document.getElementById('route-warning');
+  const btn     = document.getElementById('route-btn');
+
+  if (!fromVal || !toVal) return;
+
+  btn.disabled = true;
+  btn.textContent = 'Berechne…';
+  info.classList.remove('active');
+  warning.classList.remove('active');
 
   try {
-    // Geocode both inputs
-    const [fromGeo, toGeo] = await Promise.all([
-      geocode(fromInput),
-      geocode(toInput)
-    ]);
+    const [fromGeo, toGeo] = await Promise.all([geocode(fromVal), geocode(toVal)]);
 
     if (!fromGeo || !toGeo) {
-      document.getElementById('route-info').innerHTML = '⚠️ Adresse nicht gefunden';
-      document.getElementById('route-info').classList.add('active');
+      info.innerHTML = '⚠️ Adresse nicht gefunden';
+      info.classList.add('active');
       return;
     }
 
-    // Try self-hosted OSRM, fallback to public
-    let url = `${ROUTE_URL}/${fromGeo.lon},${fromGeo.lat};${toGeo.lon},${toGeo.lat}?overview=full&geometries=geojson`;
-    let res = await fetch(url).catch(() => null);
-    
-    if (!res || !res.ok) {
-      url = `https://router.project-osrm.org/route/v1/driving/${fromGeo.lon},${fromGeo.lat};${toGeo.lon},${toGeo.lat}?overview=full&geometries=geojson`;
-      res = await fetch(url);
+    const coords = `${fromGeo.lon},${fromGeo.lat};${toGeo.lon},${toGeo.lat}`;
+    const params = 'overview=full&geometries=geojson';
+    let usingPublic = false;
+
+    let routeData = null;
+
+    if (CFG.osrmAvailable) {
+      routeData = await fetchRoute(`${LOCAL.route}/${coords}?${params}`);
+    }
+    if (!routeData) {
+      routeData = await fetchRoute(`${FALLBACK.route}/${coords}?${params}`);
+      usingPublic = true;
     }
 
-    const data = await res.json();
-    
-    if (data.routes && data.routes.length) {
-      const route = data.routes[0];
-      const mins = Math.round(route.duration / 60);
-      const km = (route.distance / 1000).toFixed(1);
-      
-      // Show route info
-      const info = document.getElementById('route-info');
-      info.innerHTML = `🚗 <strong>${km} km</strong> · ${mins} min`;
+    if (routeData?.routes?.length) {
+      const route = routeData.routes[0];
+      const mins  = Math.round(route.duration / 60);
+      const km    = (route.distance / 1000).toFixed(1);
+
+      info.innerHTML = `🚗 <strong>${km} km</strong> · <strong>${mins} min</strong>`;
       info.classList.add('active');
 
-      // Draw route on map
+      if (usingPublic) {
+        warning.textContent = 'ℹ️ Verwendet öffentlichen OSRM-Server (rate-limited)';
+        warning.classList.add('active');
+      }
+
+      // Draw route
       if (map.getSource('route')) {
         map.getSource('route').setData(route.geometry);
       } else {
         map.addSource('route', { type: 'geojson', data: route.geometry });
         map.addLayer({
+          id: 'route-outline',
+          type: 'line',
+          source: 'route',
+          layout: { 'line-join': 'round', 'line-cap': 'round' },
+          paint: { 'line-color': '#fff', 'line-width': 7, 'line-opacity': 0.6 },
+        });
+        map.addLayer({
           id: 'route',
           type: 'line',
           source: 'route',
-          paint: {
-            'line-color': '#1a73e8',
-            'line-width': 5,
-            'line-opacity': 0.8
-          }
+          layout: { 'line-join': 'round', 'line-cap': 'round' },
+          paint: { 'line-color': '#1a73e8', 'line-width': 5, 'line-opacity': 0.9 },
         });
       }
 
-      // Fit map to route
-      const coords = route.geometry.coordinates;
-      const bounds = coords.reduce(
+      // Fit bounds
+      const allCoords = route.geometry.coordinates;
+      const bounds = allCoords.reduce(
         (b, c) => b.extend(c),
-        new maplibregl.LngLatBounds(coords[0], coords[0])
+        new maplibregl.LngLatBounds(allCoords[0], allCoords[0])
       );
-      map.fitBounds(bounds, { padding: 80, duration: 1000 });
+      map.fitBounds(bounds, { padding: 80, duration: 1000, maxZoom: 16 });
+    } else {
+      info.innerHTML = '⚠️ Keine Route gefunden';
+      info.classList.add('active');
     }
   } catch (err) {
     console.error('Routing error:', err);
+    info.innerHTML = '⚠️ Routing-Fehler';
+    info.classList.add('active');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Route berechnen';
+  }
+}
+
+async function fetchRoute(url) {
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(15000) });
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (data.code !== 'Ok') return null;
+    return data;
+  } catch {
+    return null;
   }
 }
 
 async function geocode(query) {
-  try {
-    let url = `${SEARCH_URL}?q=${encodeURIComponent(query)}&limit=1&lang=de`;
-    let res = await fetch(url).catch(() => null);
-    if (!res || !res.ok) {
-      url = `https://photon.komoot.io/api?q=${encodeURIComponent(query)}&limit=1&lang=de`;
-      res = await fetch(url);
-    }
-    const data = await res.json();
-    if (data.features && data.features.length) {
-      const [lon, lat] = data.features[0].geometry.coordinates;
-      return { lat, lon };
-    }
-  } catch (err) {}
+  const params = `q=${encodeURIComponent(query)}&limit=1&lang=de`;
+  let features = [];
+  if (CFG.photonAvailable) features = await fetchSearch(`${LOCAL.search}?${params}`);
+  if (!features.length)     features = await fetchSearch(`${FALLBACK.search}?${params}`);
+  if (features.length) {
+    const [lon, lat] = features[0].geometry.coordinates;
+    return { lat, lon };
+  }
   return null;
 }
 
-// ========== CONTROLS ==========
-function zoomIn() { map.zoomIn({ duration: 300 }); }
-function zoomOut() { map.zoomOut({ duration: 300 }); }
-function geolocate() {
-  navigator.geolocation.getCurrentPosition(
-    (pos) => {
-      map.flyTo({
-        center: [pos.coords.longitude, pos.coords.latitude],
-        zoom: 15,
-        duration: 1500
-      });
-      new maplibregl.Marker({ color: '#1a73e8' })
-        .setLngLat([pos.coords.longitude, pos.coords.latitude])
-        .addTo(map);
-    },
-    (err) => console.error('Geolocation error:', err)
-  );
+// =============================================================================
+//  UTILITIES
+// =============================================================================
+function escapeHtml(str) {
+  return String(str)
+    .replace(/&/g,'&amp;')
+    .replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;');
 }
 
-// Close search results on click outside
-document.addEventListener('click', (e) => {
+// Close search on outside click
+document.addEventListener('click', e => {
   if (!e.target.closest('.search-container')) {
     searchResults.classList.remove('active');
   }
 });
 </script>
+
+<!-- Load runtime config from init.sh -->
+<script src="/config.js" onerror="console.info('No config.js yet — using defaults')"></script>
 </body>
 </html>

@@ -1,0 +1,10 @@
+.git
+.github
+*.md
+!README.md
+.gitignore
+*.log
+*.tmp
+__pycache__
+.DS_Store
+node_modules

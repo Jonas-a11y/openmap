@@ -1,118 +1,463 @@
 #!/bin/bash
-set -e
+# =============================================================================
+#  OpenMap — Init Script
+#  Runs on every container start. Downloads data on first run, then starts
+#  all services via supervisord. Designed for graceful degradation — missing
+#  optional services (OSRM, Photon) won't prevent the map from loading.
+# =============================================================================
+set -euo pipefail
 
+# ── Configuration ─────────────────────────────────────────────────────────────
 DATA_DIR="${DATA_DIR:-/data}"
 REGION="${REGION:-germany}"
 PBF_URL="${DOWNLOAD_URL:-https://download.geofabrik.de/europe/germany-latest.osm.pbf}"
-PBF_FILE="${DATA_DIR}/${REGION}.osm.pbf"
+TILES_MODE="${TILES_MODE:-pmtiles}"
+PMTILES_AREA="${PMTILES_AREA:-germany}"
+PMTILES_URL="${PMTILES_URL:-}"
+PHOTON_DOWNLOAD_URL="${PHOTON_DOWNLOAD_URL:-https://download1.graphhopper.com/public/photon-db-de-1.0-latest.tar.bz2}"
+LOG_DIR="${DATA_DIR}/logs"
 
-echo "============================================"
-echo "  🗺️  OpenMap — All-in-One OSM Server"
-echo "============================================"
-echo "  Region: ${REGION}"
-echo "  Data:   ${DATA_DIR}"
-echo "============================================"
+# ── Logging ───────────────────────────────────────────────────────────────────
+mkdir -p "${LOG_DIR}"
+LOGFILE="${LOG_DIR}/init.log"
 
-# ========== DOWNLOAD OSM DATA ==========
-if [ ! -f "${PBF_FILE}" ]; then
-    echo "📥 Downloading OSM data for ${REGION}..."
-    wget -q --show-progress -O "${PBF_FILE}" "${PBF_URL}"
-    echo "✅ Download complete"
-else
-    echo "✅ OSM data already exists"
-fi
-
-# ========== PREPARE TILES ==========
-MBTILES="${DATA_DIR}/tiles/${REGION}.mbtiles"
-if [ ! -f "${MBTILES}" ]; then
-    echo "🔨 Generating vector tiles (this takes a while on first run)..."
-    # Use tilemaker for generating tiles from PBF
-    if command -v tilemaker &> /dev/null; then
-        tilemaker --input "${PBF_FILE}" --output "${MBTILES}"
-    else
-        echo "⚠️  tilemaker not found, downloading pre-built tiles..."
-        # Fallback: download pre-built mbtiles for the region
-        wget -q --show-progress \
-            -O "${MBTILES}" \
-            "https://data.source.coop/protomaps/openstreetmap/tiles/v3.json" 2>/dev/null || \
-        echo "⚠️  Could not download pre-built tiles. Please provide ${MBTILES} manually."
-    fi
-    echo "✅ Tiles ready"
-else
-    echo "✅ Tiles already exist"
-fi
-
-# Write tileserver config
-cat > "${DATA_DIR}/tiles/config.json" << EOF
-{
-  "options": {
-    "paths": {
-      "root": "/data/tiles",
-      "mbtiles": "/data/tiles"
-    }
-  },
-  "data": {
-    "${REGION}": {
-      "mbtiles": "${REGION}.mbtiles"
-    }
-  }
+log() {
+    local level="${1:-INFO}"
+    local msg="${2:-}"
+    local ts
+    ts=$(date '+%Y-%m-%d %H:%M:%S')
+    echo "[${ts}] [${level}] ${msg}" | tee -a "${LOGFILE}"
 }
-EOF
 
-# ========== PREPARE OSRM ==========
-OSRM_FILE="${DATA_DIR}/osrm/${REGION}.osrm"
-if [ ! -f "${OSRM_FILE}.datasource" ]; then
-    echo "🔨 Preparing routing data (this takes a while on first run)..."
-    cd "${DATA_DIR}/osrm"
-    
-    # Get car profile
-    if [ ! -f "car.lua" ]; then
-        wget -q -O car.lua \
-            "https://raw.githubusercontent.com/Project-OSRM/osrm-backend/master/profiles/car.lua"
-        wget -q -O lib/access.lua --create-dirs \
-            "https://raw.githubusercontent.com/Project-OSRM/osrm-backend/master/profiles/lib/access.lua" 2>/dev/null || true
-    fi
-    
-    osrm-extract -p car.lua "${PBF_FILE}" -o "${OSRM_FILE}" 2>/dev/null || \
-    osrm-extract -p /usr/share/osrm/profiles/car.lua "${PBF_FILE}" 2>/dev/null || \
-    echo "⚠️  OSRM extract needs more RAM, trying with less memory..."
-    
-    if [ -f "${OSRM_FILE}" ]; then
-        osrm-partition "${OSRM_FILE}"
-        osrm-customize "${OSRM_FILE}"
-        echo "✅ Routing data ready"
+info()    { log "INFO " "$*"; }
+warn()    { log "WARN " "$*"; }
+success() { log "OK   " "$*"; }
+error()   { log "ERROR" "$*"; }
+section() {
+    echo "" | tee -a "${LOGFILE}"
+    echo "══════════════════════════════════════════════" | tee -a "${LOGFILE}"
+    echo "  $*" | tee -a "${LOGFILE}"
+    echo "══════════════════════════════════════════════" | tee -a "${LOGFILE}"
+}
+
+# ── Status file helpers ───────────────────────────────────────────────────────
+STATUS_FILE="${DATA_DIR}/.openmap-status.json"
+
+status_get() {
+    local key="$1"
+    if [ -f "${STATUS_FILE}" ]; then
+        jq -r ".${key} // \"\"" "${STATUS_FILE}" 2>/dev/null || echo ""
     else
-        echo "⚠️  Routing data preparation failed — routing will be unavailable"
+        echo ""
+    fi
+}
+
+status_set() {
+    local key="$1"
+    local val="$2"
+    local tmp
+    tmp=$(mktemp)
+    if [ -f "${STATUS_FILE}" ]; then
+        jq --arg k "$key" --arg v "$val" '.[$k] = $v' "${STATUS_FILE}" > "${tmp}"
+    else
+        jq -n --arg k "$key" --arg v "$val" '{($k): $v}' > "${tmp}"
+    fi
+    mv "${tmp}" "${STATUS_FILE}"
+}
+
+# ── Service availability tracking ─────────────────────────────────────────────
+TILES_AVAILABLE=false
+PHOTON_AVAILABLE=false
+OSRM_AVAILABLE=false
+
+# Write a JS config file consumed by the frontend to know which services exist
+write_frontend_config() {
+    cat > /var/www/html/config.js << JSEOF
+// Auto-generated by init.sh — do not edit manually
+window.OPENMAP_CONFIG = {
+  tilesMode: "${TILES_MODE}",
+  tilesAvailable: ${TILES_AVAILABLE},
+  photonAvailable: ${PHOTON_AVAILABLE},
+  osrmAvailable: ${OSRM_AVAILABLE},
+  region: "${REGION}",
+  generatedAt: "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+};
+JSEOF
+    info "Frontend config written (tiles=${TILES_AVAILABLE}, photon=${PHOTON_AVAILABLE}, osrm=${OSRM_AVAILABLE})"
+}
+
+# ── Download helper ───────────────────────────────────────────────────────────
+download_file() {
+    local url="$1"
+    local dest="$2"
+    local desc="${3:-file}"
+    local tmp="${dest}.download.tmp"
+
+    info "Downloading ${desc}..."
+    info "  URL:  ${url}"
+    info "  Dest: ${dest}"
+
+    if wget \
+        --tries=3 \
+        --timeout=60 \
+        --continue \
+        --show-progress \
+        --progress=bar:force:noscroll \
+        -O "${tmp}" \
+        "${url}" 2>&1 | tee -a "${LOGFILE}"; then
+        mv "${tmp}" "${dest}"
+        success "Downloaded ${desc}"
+        return 0
+    else
+        rm -f "${tmp}"
+        warn "Failed to download ${desc}"
+        return 1
+    fi
+}
+
+# =============================================================================
+#  BANNER
+# =============================================================================
+section "🗺️  OpenMap — All-in-One OSM Server"
+info "Region:    ${REGION}"
+info "Tiles:     ${TILES_MODE}"
+info "Data dir:  ${DATA_DIR}"
+info "Container: $(hostname)"
+info "Arch:      $(uname -m)"
+echo ""
+
+# Make sure data directories exist
+mkdir -p \
+    "${DATA_DIR}/tiles" \
+    "${DATA_DIR}/photon" \
+    "${DATA_DIR}/osrm" \
+    "${LOG_DIR}"
+
+# =============================================================================
+#  TILES SETUP
+#  Strategy:
+#    1. If ${DATA_DIR}/tiles/map.pmtiles already exists → done (use it)
+#    2. If PMTILES_URL is set → download it directly
+#    3. Otherwise → use OSM raster tiles as fallback (no download needed)
+# =============================================================================
+section "🗺️  Tiles Setup"
+
+PMTILES_FILE="${DATA_DIR}/tiles/map.pmtiles"
+
+if [ -f "${PMTILES_FILE}" ]; then
+    success "PMTiles file already exists: ${PMTILES_FILE}"
+    TILES_AVAILABLE=true
+    TILES_MODE="pmtiles"
+    status_set "tiles" "ready"
+elif [ -n "${PMTILES_URL}" ]; then
+    info "PMTILES_URL is set — downloading PMTiles archive..."
+    if download_file "${PMTILES_URL}" "${PMTILES_FILE}" "PMTiles archive"; then
+        TILES_AVAILABLE=true
+        TILES_MODE="pmtiles"
+        status_set "tiles" "ready"
+        success "PMTiles ready"
+    else
+        warn "PMTiles download failed — falling back to public OSM tiles"
+        TILES_AVAILABLE=false
+        TILES_MODE="osm"
+        status_set "tiles" "fallback"
     fi
 else
-    echo "✅ Routing data already exists"
+    info "No PMTiles file found and no PMTILES_URL set."
+    info "Using public OpenStreetMap raster tiles as fallback."
+    info ""
+    info "To enable self-hosted vector tiles:"
+    info "  Set PMTILES_URL to a .pmtiles download URL, e.g.:"
+    info "  -e PMTILES_URL=https://example.com/map.pmtiles"
+    info ""
+    info "Or download a Protomaps extract manually and mount it at:"
+    info "  ${PMTILES_FILE}"
+    TILES_AVAILABLE=false
+    TILES_MODE="osm"
+    status_set "tiles" "fallback"
 fi
 
-# ========== PREPARE PHOTON ==========
+# =============================================================================
+#  PHOTON SETUP (optional)
+#  Downloads pre-built Photon search index from GraphHopper.
+#  Graceful degradation: if download fails, fallback to public photon.komoot.io
+# =============================================================================
+section "🔍 Photon Search Setup"
+
 PHOTON_DB="${DATA_DIR}/photon/photon_data"
-if [ ! -d "${PHOTON_DB}" ]; then
-    echo "📥 Downloading Photon search index for ${REGION}..."
-    cd "${DATA_DIR}/photon"
-    
-    # Photon provides pre-built search indices
-    wget -q --show-progress \
-        -O photon-db-latest.tar.bz2 \
-        "https://download1.graphhopper.com/public/extracts/by-country-code/de/photon-db-de-latest.tar.bz2" 2>/dev/null || \
-    echo "⚠️  Could not download Photon index. Search will be unavailable."
-    
-    if [ -f "photon-db-latest.tar.bz2" ]; then
-        echo "📦 Extracting search index..."
-        tar xjf photon-db-latest.tar.bz2
-        rm -f photon-db-latest.tar.bz2
-        echo "✅ Search index ready"
-    fi
+
+if [ -d "${PHOTON_DB}" ] && [ "$(ls -A "${PHOTON_DB}" 2>/dev/null)" ]; then
+    success "Photon database already exists"
+    PHOTON_AVAILABLE=true
+    status_set "photon" "ready"
+elif [ "${PHOTON_DOWNLOAD_URL}" = "none" ]; then
+    info "Photon download disabled (PHOTON_DOWNLOAD_URL=none)"
+    info "Search will fall back to public photon.komoot.io"
+    PHOTON_AVAILABLE=false
+    status_set "photon" "disabled"
 else
-    echo "✅ Search index already exists"
+    info "Downloading Photon search index..."
+    info "Note: This is a large file (~8-15GB for Germany). May take 20-60 minutes."
+    info "URL: ${PHOTON_DOWNLOAD_URL}"
+
+    PHOTON_TMP="${DATA_DIR}/photon/photon-db.tar.bz2.tmp"
+
+    if wget \
+        --tries=3 \
+        --timeout=120 \
+        --continue \
+        --show-progress \
+        --progress=bar:force:noscroll \
+        -O "${PHOTON_TMP}" \
+        "${PHOTON_DOWNLOAD_URL}" 2>&1 | tee -a "${LOGFILE}"; then
+
+        info "Extracting Photon database (may take several minutes)..."
+        mkdir -p "${DATA_DIR}/photon"
+        if pbzip2 -cd "${PHOTON_TMP}" 2>/dev/null | tar x -C "${DATA_DIR}/photon" 2>&1 | tee -a "${LOGFILE}" || \
+           bzip2 -cd "${PHOTON_TMP}" | tar x -C "${DATA_DIR}/photon" 2>&1 | tee -a "${LOGFILE}"; then
+            rm -f "${PHOTON_TMP}"
+            success "Photon database ready"
+            PHOTON_AVAILABLE=true
+            status_set "photon" "ready"
+        else
+            warn "Photon extraction failed — falling back to public photon.komoot.io"
+            rm -f "${PHOTON_TMP}"
+            PHOTON_AVAILABLE=false
+            status_set "photon" "failed"
+        fi
+    else
+        warn "Photon download failed — falling back to public photon.komoot.io"
+        rm -f "${PHOTON_TMP}" 2>/dev/null || true
+        PHOTON_AVAILABLE=false
+        status_set "photon" "failed"
+    fi
+fi
+
+# =============================================================================
+#  OSRM SETUP (optional)
+#  Processes OSM PBF for car routing. Requires significant RAM (~8GB for DE).
+#  Graceful degradation: falls back to public router.project-osrm.org
+# =============================================================================
+section "🧭 OSRM Routing Setup"
+
+OSRM_GRAPH="${DATA_DIR}/osrm/${REGION}.osrm"
+
+if [ -f "${OSRM_GRAPH}.datasource_names" ] || [ -f "${OSRM_GRAPH}.cell_metrics" ]; then
+    success "OSRM routing data already exists"
+    OSRM_AVAILABLE=true
+    status_set "osrm" "ready"
+else
+    info "OSRM routing data not found."
+
+    # Check available RAM
+    AVAILABLE_RAM_MB=$(awk '/MemAvailable/ {printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || echo "0")
+    info "Available RAM: ${AVAILABLE_RAM_MB} MB"
+
+    if [ "${AVAILABLE_RAM_MB}" -lt "4096" ]; then
+        warn "Less than 4GB RAM available — skipping OSRM processing"
+        warn "Routing will fall back to public router.project-osrm.org"
+        OSRM_AVAILABLE=false
+        status_set "osrm" "skipped_low_ram"
+    else
+        # Need PBF file to process
+        PBF_FILE="${DATA_DIR}/${REGION}.osm.pbf"
+
+        if [ ! -f "${PBF_FILE}" ]; then
+            info "Downloading OSM PBF data for routing..."
+            info "URL: ${PBF_URL}"
+            if ! download_file "${PBF_URL}" "${PBF_FILE}" "OSM PBF (${REGION})"; then
+                warn "PBF download failed — skipping OSRM"
+                OSRM_AVAILABLE=false
+                status_set "osrm" "failed_download"
+            fi
+        fi
+
+        if [ -f "${PBF_FILE}" ]; then
+            info "Processing OSRM routing graph (this takes 20-60 min for Germany)..."
+            mkdir -p "${DATA_DIR}/osrm"
+
+            # Get car.lua profile
+            CAR_PROFILE="/usr/share/osrm/profiles/car.lua"
+            if [ ! -f "${CAR_PROFILE}" ]; then
+                info "Downloading car routing profile..."
+                mkdir -p /usr/share/osrm/profiles/lib
+                wget -q -O "${CAR_PROFILE}" \
+                    "https://raw.githubusercontent.com/Project-OSRM/osrm-backend/v5.27.1/profiles/car.lua" || true
+                # Download profile dependencies
+                for f in access.lua annex.lua destination.lua maxspeed.lua oneway.lua penalties.lua restrictions.lua; do
+                    wget -q -O "/usr/share/osrm/profiles/lib/${f}" \
+                        "https://raw.githubusercontent.com/Project-OSRM/osrm-backend/v5.27.1/profiles/lib/${f}" 2>/dev/null || true
+                done
+            fi
+
+            OSRM_OK=0  # 0=success, 1=failed
+
+            # Extract
+            info "Step 1/3: osrm-extract..."
+            if osrm-extract -p "${CAR_PROFILE}" "${PBF_FILE}" -o "${OSRM_GRAPH}" 2>&1 | tee -a "${LOGFILE}"; then
+                # Partition
+                info "Step 2/3: osrm-partition..."
+                if osrm-partition "${OSRM_GRAPH}" 2>&1 | tee -a "${LOGFILE}"; then
+                    # Customize
+                    info "Step 3/3: osrm-customize..."
+                    if osrm-customize "${OSRM_GRAPH}" 2>&1 | tee -a "${LOGFILE}"; then
+                        OSRM_OK=1
+                    fi
+                fi
+            fi
+
+            if [ "${OSRM_OK}" -eq 1 ]; then
+                success "OSRM routing data ready"
+                OSRM_AVAILABLE=true
+                status_set "osrm" "ready"
+            else
+                error "OSRM processing failed — routing will fall back to public OSRM"
+                OSRM_AVAILABLE=false
+                status_set "osrm" "failed_processing"
+            fi
+        fi
+    fi
+fi
+
+# =============================================================================
+#  WRITE FRONTEND CONFIG
+# =============================================================================
+section "⚙️  Writing frontend config"
+write_frontend_config
+
+# =============================================================================
+#  SUPERVISOR CONFIG — enable only available services
+# =============================================================================
+section "🔧 Configuring supervisor"
+
+SUPERVISOR_CONF="/etc/supervisor/conf.d/openmap.conf"
+
+# Always enable: nginx
+ENABLED_SERVICES="nginx"
+
+if ${PHOTON_AVAILABLE}; then
+    info "Photon: ENABLED"
+    ENABLED_SERVICES="${ENABLED_SERVICES}, photon"
+else
+    # Disable photon in supervisor
+    sed -i 's/^autostart=true/autostart=false/' "${SUPERVISOR_CONF}" 2>/dev/null || true
+    info "Photon: DISABLED (using public fallback)"
+fi
+
+if ${OSRM_AVAILABLE}; then
+    info "OSRM: ENABLED"
+    ENABLED_SERVICES="${ENABLED_SERVICES}, osrm"
+else
+    info "OSRM: DISABLED (using public fallback)"
+fi
+
+# Write supervisor config
+cat > "${SUPERVISOR_CONF}" << SUPEOF
+[supervisord]
+nodaemon=true
+logfile=/var/log/openmap/supervisord.log
+logfile_maxbytes=10MB
+logfile_backups=3
+pidfile=/var/run/openmap/supervisord.pid
+user=root
+
+[unix_http_server]
+file=/var/run/openmap/supervisor.sock
+chmod=0700
+
+[supervisorctl]
+serverurl=unix:///var/run/openmap/supervisor.sock
+
+[rpcinterface:supervisor]
+supervisor.rpcinterface_factory = supervisor.rpcinterface:make_main_rpcinterface
+
+# ── Nginx ──────────────────────────────────────────────────────────────────
+[program:nginx]
+command=nginx -g "daemon off;"
+autostart=true
+autorestart=true
+startretries=5
+priority=10
+stdout_logfile=/dev/stdout
+stdout_logfile_maxbytes=0
+stderr_logfile=/dev/stderr
+stderr_logfile_maxbytes=0
+stdout_events_enabled=true
+stderr_events_enabled=true
+
+SUPEOF
+
+# Append Photon if available
+if ${PHOTON_AVAILABLE}; then
+    PHOTON_HEAP="${PHOTON_JVM_HEAP:-4g}"
+    cat >> "${SUPERVISOR_CONF}" << SUPEOF
+# ── Photon (Search/Geocoding) ──────────────────────────────────────────────
+[program:photon]
+command=java -Xmx${PHOTON_HEAP} -jar /opt/photon/photon.jar -data-path ${DATA_DIR}/photon -listen-port 2322
+autostart=true
+autorestart=true
+startretries=3
+startsecs=10
+priority=20
+stdout_logfile=/var/log/openmap/photon.log
+stdout_logfile_maxbytes=10MB
+stdout_logfile_backups=2
+stderr_logfile=/var/log/openmap/photon-err.log
+stderr_logfile_maxbytes=10MB
+
+SUPEOF
+fi
+
+# Append OSRM if available
+if ${OSRM_AVAILABLE}; then
+    cat >> "${SUPERVISOR_CONF}" << SUPEOF
+# ── OSRM (Routing) ────────────────────────────────────────────────────────
+[program:osrm]
+command=osrm-routed --algorithm=MLD ${OSRM_GRAPH} --port 5000 --max-table-size 10000
+autostart=true
+autorestart=true
+startretries=3
+startsecs=5
+priority=20
+stdout_logfile=/var/log/openmap/osrm.log
+stdout_logfile_maxbytes=10MB
+stdout_logfile_backups=2
+stderr_logfile=/var/log/openmap/osrm-err.log
+stderr_logfile_maxbytes=10MB
+
+SUPEOF
+fi
+
+success "Supervisor configured (services: ${ENABLED_SERVICES})"
+
+# =============================================================================
+#  SUMMARY
+# =============================================================================
+section "📋 Startup Summary"
+info "  Tiles:   ${TILES_MODE} (available: ${TILES_AVAILABLE})"
+info "  Photon:  ${PHOTON_AVAILABLE}"
+info "  OSRM:    ${OSRM_AVAILABLE}"
+info ""
+info "  Access:  http://localhost:80"
+info "  Logs:    ${LOG_DIR}/"
+info ""
+
+if ! ${TILES_AVAILABLE}; then
+    info "  ℹ️  Map uses public OSM tiles (rate-limited)."
+    info "     For self-hosted vector tiles, set PMTILES_URL."
+fi
+if ! ${PHOTON_AVAILABLE}; then
+    info "  ℹ️  Search uses public photon.komoot.io (rate-limited)."
+fi
+if ! ${OSRM_AVAILABLE}; then
+    info "  ℹ️  Routing uses public router.project-osrm.org (rate-limited)."
 fi
 
 echo ""
-echo "============================================"
-echo "  🚀 Starting all services..."
-echo "============================================"
 
-exec /usr/bin/supervisord -c /etc/supervisor/conf.d/supervisord.conf
+# =============================================================================
+#  START SERVICES
+# =============================================================================
+section "🚀 Starting services via supervisord"
+
+exec /usr/bin/supervisord -c "${SUPERVISOR_CONF}"

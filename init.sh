@@ -294,7 +294,9 @@ else
 
             # Extract
             info "Step 1/3: osrm-extract..."
-            if osrm-extract -p "${CAR_PROFILE}" "${PBF_FILE}" -o "${OSRM_GRAPH}" 2>&1 | tee -a "${LOGFILE}"; then
+            cd "${DATA_DIR}/osrm"
+            ln -sf "${PBF_FILE}" "${DATA_DIR}/osrm/${REGION}.osm.pbf"
+            if osrm-extract -p "${CAR_PROFILE}" "${DATA_DIR}/osrm/${REGION}.osm.pbf" 2>&1 | tee -a "${LOGFILE}"; then
                 # Partition
                 info "Step 2/3: osrm-partition..."
                 if osrm-partition "${OSRM_GRAPH}" 2>&1 | tee -a "${LOGFILE}"; then

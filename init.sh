@@ -14,7 +14,7 @@ PBF_URL="${DOWNLOAD_URL:-https://download.geofabrik.de/europe/germany-latest.osm
 TILES_MODE="${TILES_MODE:-pmtiles}"
 PMTILES_AREA="${PMTILES_AREA:-germany}"
 PMTILES_URL="${PMTILES_URL:-}"
-PHOTON_DOWNLOAD_URL="${PHOTON_DOWNLOAD_URL:-https://download1.graphhopper.com/public/photon-db-de-1.0-latest.tar.bz2}"
+PHOTON_DOWNLOAD_URL="${PHOTON_DOWNLOAD_URL:-https://download1.graphhopper.com/public/europe/germany/photon-db-germany-1.0-latest.tar.bz2}"
 LOG_DIR="${DATA_DIR}/logs"
 
 # ── Logging ───────────────────────────────────────────────────────────────────
@@ -253,8 +253,8 @@ else
     AVAILABLE_RAM_MB=$(awk '/MemAvailable/ {printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || echo "0")
     info "Available RAM: ${AVAILABLE_RAM_MB} MB"
 
-    if [ "${AVAILABLE_RAM_MB}" -lt "4096" ]; then
-        warn "Less than 4GB RAM available — skipping OSRM processing"
+    if [ "${AVAILABLE_RAM_MB}" -lt "2048" ]; then
+        warn "Less than 2GB RAM available — skipping OSRM processing"
         warn "Routing will fall back to public router.project-osrm.org"
         OSRM_AVAILABLE=false
         status_set "osrm" "skipped_low_ram"

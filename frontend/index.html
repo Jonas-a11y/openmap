@@ -82,6 +82,36 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; o
 .gps-dot { width: 16px; height: 16px; background: #1a73e8; border: 3px solid white; border-radius: 50%; box-shadow: 0 1px 4px rgba(0,0,0,0.3); position: relative; }
 .gps-dot::after { content: ''; position: absolute; top: 50%; left: 50%; width: 16px; height: 16px; background: rgba(26,115,232,0.3); border-radius: 50%; animation: gps-pulse 2s ease-out infinite; }
 
+/* Dark mode */
+body.dark-mode #map canvas { filter: invert(1) hue-rotate(180deg); }
+body.dark-mode .search-box, body.dark-mode .route-panel, body.dark-mode .search-results { background: #1e1e1e; color: #eee; }
+body.dark-mode .search-box input { color: #eee; }
+body.dark-mode .search-result { border-bottom-color: #333; }
+body.dark-mode .search-result:hover { background: #2a2a2a; }
+body.dark-mode .search-result .detail { color: #999; }
+body.dark-mode .route-panel input { background: #2a2a2a; color: #eee; border-color: #444; }
+body.dark-mode .route-panel h3 { color: #ccc; }
+body.dark-mode .route-info { background: #1a2a3a; color: #ccc; }
+body.dark-mode .ctrl-btn { background: #2a2a2a; color: #eee; box-shadow: 0 2px 8px rgba(0,0,0,0.3); }
+body.dark-mode .ctrl-btn:hover { background: #333; }
+body.dark-mode .ctrl-btn.active { background: #1a73e8; color: white; }
+body.dark-mode .speed-badge { background: #2a2a2a; box-shadow: 0 2px 10px rgba(0,0,0,0.3); }
+body.dark-mode .speed-badge .speed-val { color: #eee; }
+body.dark-mode .speed-badge .speed-unit { color: #999; }
+body.dark-mode .nav-bottom { background: #1e1e1e; box-shadow: 0 -2px 12px rgba(0,0,0,0.3); }
+body.dark-mode .nav-bottom-eta { color: #eee; }
+body.dark-mode .nav-bottom-detail { color: #999; }
+body.dark-mode .attribution { background: rgba(30,30,30,0.8); color: #999; }
+
+/* Favorites bar */
+.favorites-bar { position: absolute; bottom: 28px; left: 50%; transform: translateX(-50%); z-index: 10; display: flex; gap: 8px; }
+.nav-active .favorites-bar { display: none; }
+.fav-btn { background: white; border: none; border-radius: 20px; padding: 10px 16px; font-size: 13px; font-weight: 600; box-shadow: 0 2px 8px rgba(0,0,0,0.12); cursor: pointer; display: flex; align-items: center; gap: 6px; min-height: 40px; transition: all 0.15s; }
+.fav-btn:active { transform: scale(0.95); }
+body.dark-mode .fav-btn { background: #2a2a2a; color: #eee; box-shadow: 0 2px 8px rgba(0,0,0,0.3); }
+.fav-btn .fav-icon { font-size: 16px; }
+.fav-set { font-size: 11px; color: #999; cursor: pointer; text-decoration: underline; display: block; text-align: center; margin-top: 2px; }
+
 .attribution { position: absolute; bottom: 4px; left: 80px; font-size: 10px; color: #666; background: rgba(255,255,255,0.8); padding: 2px 6px; border-radius: 4px; z-index: 5; }
 .attribution a { color: #1a73e8; text-decoration: none; }
 </style>
@@ -124,7 +154,13 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; o
   <button class="ctrl-btn" id="btn-follow" onclick="toggleFollow()">📍</button>
   <button class="ctrl-btn" id="btn-fullscreen" onclick="toggleFullscreen()">⛶</button>
   <button class="ctrl-btn" id="btn-mute" onclick="toggleMute()">🔊</button>
+  <button class="ctrl-btn" id="btn-dark" onclick="toggleDark()">🌙</button>
   <button class="ctrl-btn" onclick="toggleRoute()">🧭</button>
+</div>
+
+<div class="favorites-bar" id="favorites-bar">
+  <button class="fav-btn" id="fav-home" onclick="navToFav('home')"><span class="fav-icon">🏠</span> Zuhause</button>
+  <button class="fav-btn" id="fav-work" onclick="navToFav('work')"><span class="fav-icon">💼</span> Arbeit</button>
 </div>
 
 <div class="speed-badge" id="speed-badge">
@@ -418,6 +454,65 @@ async function geocode(q){
   }catch(e){}
   return null;
 }
+
+// === Dark Mode ===
+let darkMode = localStorage.getItem('openmap-dark') === 'true';
+// Auto dark mode: between 20:00 and 6:00
+const hour = new Date().getHours();
+if (localStorage.getItem('openmap-dark') === null && (hour >= 20 || hour < 6)) darkMode = true;
+
+function applyDark() {
+  document.body.classList.toggle('dark-mode', darkMode);
+  document.getElementById('btn-dark').textContent = darkMode ? '☀️' : '🌙';
+  document.querySelector('meta[name="theme-color"]').content = darkMode ? '#1e1e1e' : '#1a73e8';
+}
+function toggleDark() {
+  darkMode = !darkMode;
+  localStorage.setItem('openmap-dark', darkMode);
+  applyDark();
+}
+applyDark();
+
+// === Favorites ===
+let favorites = JSON.parse(localStorage.getItem('openmap-favs') || '{}');
+
+function navToFav(key) {
+  const fav = favorites[key];
+  if (!fav || !fav.lat) {
+    const name = prompt(key === 'home' ? 'Adresse für "Zuhause" eingeben:' : 'Adresse für "Arbeit" eingeben:');
+    if (!name) return;
+    geocode(name).then(geo => {
+      if (geo) {
+        favorites[key] = { ...geo, name };
+        localStorage.setItem('openmap-favs', JSON.stringify(favorites));
+        // Now navigate
+        startRouteTo(geo, name);
+      } else { alert('Adresse nicht gefunden'); }
+    });
+    return;
+  }
+  startRouteTo(fav, fav.name);
+}
+
+async function startRouteTo(destGeo, destName) {
+  if (!currentPos) { alert('GPS-Position nicht verfügbar'); return; }
+  const fromG = { lat: currentPos.lat, lon: currentPos.lng };
+  navFromGeo = fromG; navDestGeo = destGeo;
+  try {
+    const data = await fetchRoute(fromG, destGeo);
+    if (data.routes && data.routes.length) {
+      navRoute = data.routes[0];
+      // Draw route
+      if (map.getSource('route')) map.getSource('route').setData(navRoute.geometry);
+      else { map.addSource('route', { type: 'geojson', data: navRoute.geometry }); map.addLayer({ id: 'route', type: 'line', source: 'route', paint: { 'line-color': '#4285f4', 'line-width': 5, 'line-opacity': 0.85 } }); }
+      startNavigation();
+    }
+  } catch (e) { console.error('Fav route error:', e); }
+}
+
+// Long-press on fav button to reset
+document.getElementById('fav-home').addEventListener('contextmenu', (e) => { e.preventDefault(); if (confirm('Zuhause-Adresse ändern?')) { delete favorites.home; localStorage.setItem('openmap-favs', JSON.stringify(favorites)); } });
+document.getElementById('fav-work').addEventListener('contextmenu', (e) => { e.preventDefault(); if (confirm('Arbeits-Adresse ändern?')) { delete favorites.work; localStorage.setItem('openmap-favs', JSON.stringify(favorites)); } });
 
 // === Controls ===
 function zoomIn(){map.zoomIn({duration:300});}

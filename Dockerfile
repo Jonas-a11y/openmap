@@ -41,7 +41,7 @@ RUN mkdir build && cd build && \
       -DBUILD_TOOLS=Off \
       -DENABLE_LTO=On && \
     make -j$(nproc) install && \
-    cp -r profiles/ /opt/osrm-profiles/ && \
+    cp -r /src/profiles/ /opt/osrm-profiles/ && \
     strip /usr/local/bin/osrm-* 2>/dev/null || true
 
 

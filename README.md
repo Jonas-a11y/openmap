@@ -3,7 +3,7 @@
 **Self-hosted OpenStreetMap server in a single Docker container.**  
 Works out-of-the-box with public tile servers. Optionally use self-hosted vector tiles (PMTiles), search (Photon), and routing (OSRM).
 
-[![Docker Image](https://img.shields.io/docker/pulls/jonasa11y/openmap?logo=docker)](https://hub.docker.com/r/jonasa11y/openmap)
+[![Docker Image](https://img.shields.io/docker/pulls/jonasg03/openmap?logo=docker)](https://hub.docker.com/r/jonasg03/openmap)
 [![Build Status](https://github.com/Jonas-a11y/openmap/actions/workflows/docker.yml/badge.svg)](https://github.com/Jonas-a11y/openmap/actions)
 
 ---
@@ -15,7 +15,7 @@ docker run -d \
   --name openmap \
   -p 8080:80 \
   -v openmap-data:/data \
-  jonasa11y/openmap:latest
+  jonasg03/openmap:latest
 ```
 
 Open **`http://your-nas-ip:8080`** — map loads immediately using public OpenStreetMap tiles.
@@ -77,7 +77,7 @@ docker run -d \
   -p 8080:80 \
   -v openmap-data:/data \
   -e PMTILES_URL="https://example.com/germany.pmtiles" \
-  jonasa11y/openmap:latest
+  jonasg03/openmap:latest
 ```
 
 ### Getting PMTiles files
@@ -98,7 +98,7 @@ docker run -d \
   -p 8080:80 \
   -v openmap-data:/data \
   -e PHOTON_DOWNLOAD_URL="https://download1.graphhopper.com/public/photon-db-de-1.0-latest.tar.bz2" \
-  jonasa11y/openmap:latest
+  jonasg03/openmap:latest
 ```
 
 On first start, the container downloads the Photon database (~8-15 GB for Germany). This takes 20-60 minutes depending on your internet speed.
@@ -120,7 +120,7 @@ docker run -d \
   -p 8080:80 \
   -v openmap-data:/data \
   -e DOWNLOAD_URL="https://download.geofabrik.de/europe/germany-latest.osm.pbf" \
-  jonasa11y/openmap:latest
+  jonasg03/openmap:latest
 ```
 
 The container downloads and processes the OSM PBF file automatically. Routing data is stored in the volume and reused on restarts.
@@ -153,7 +153,7 @@ docker run -d \
   -e REGION=france \
   -e DOWNLOAD_URL="https://download.geofabrik.de/europe/france-latest.osm.pbf" \
   -e PHOTON_DOWNLOAD_URL="https://download1.graphhopper.com/public/photon-db-fr-1.0-latest.tar.bz2" \
-  jonasa11y/openmap:latest
+  jonasg03/openmap:latest
 ```
 
 ---

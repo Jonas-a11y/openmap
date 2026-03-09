@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OpenMap</title>
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.1.2/dist/maplibre-gl.css">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+  
+  #map { position: absolute; inset: 0; }
+
+  /* Search bar */
+  .search-container {
+    position: absolute;
+    top: 16px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 10;
+    width: min(500px, calc(100vw - 32px));
+  }
+  .search-box {
+    display: flex;
+    background: white;
+    border-radius: 24px;
+    box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+    overflow: hidden;
+    transition: box-shadow 0.2s;
+  }
+  .search-box:focus-within {
+    box-shadow: 0 4px 20px rgba(0,0,0,0.25);
+  }
+  .search-box input {
+    flex: 1;
+    border: none;
+    padding: 14px 20px;
+    font-size: 16px;
+    outline: none;
+    background: transparent;
+  }
+  .search-box button {
+    border: none;
+    background: none;
+    padding: 14px 18px;
+    cursor: pointer;
+    font-size: 18px;
+    color: #666;
+  }
+  .search-box button:hover { color: #1a73e8; }
+
+  /* Search results */
+  .search-results {
+    background: white;
+    border-radius: 16px;
+    margin-top: 8px;
+    box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+    max-height: 400px;
+    overflow-y: auto;
+    display: none;
+  }
+  .search-results.active { display: block; }
+  .search-result {
+    padding: 12px 20px;
+    cursor: pointer;
+    border-bottom: 1px solid #f0f0f0;
+    transition: background 0.15s;
+  }
+  .search-result:hover { background: #f5f5f5; }
+  .search-result:last-child { border-bottom: none; }
+  .search-result .name { font-weight: 600; font-size: 14px; }
+  .search-result .detail { font-size: 12px; color: #666; margin-top: 2px; }
+
+  /* Routing panel */
+  .route-panel {
+    position: absolute;
+    top: 16px;
+    right: 16px;
+    z-index: 10;
+    background: white;
+    border-radius: 16px;
+    box-shadow: 0 2px 12px rgba(0,0,0,0.15);
+    padding: 16px;
+    width: 280px;
+    display: none;
+  }
+  .route-panel.active { display: block; }
+  .route-panel h3 { font-size: 14px; margin-bottom: 12px; color: #333; }
+  .route-panel input {
+    width: 100%;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    padding: 10px 12px;
+    font-size: 14px;
+    margin-bottom: 8px;
+    outline: none;
+  }
+  .route-panel input:focus { border-color: #1a73e8; }
+  .route-info {
+    margin-top: 12px;
+    padding: 10px;
+    background: #f0f7ff;
+    border-radius: 8px;
+    font-size: 13px;
+    display: none;
+  }
+  .route-info.active { display: block; }
+
+  /* Controls */
+  .controls {
+    position: absolute;
+    bottom: 32px;
+    right: 16px;
+    z-index: 10;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .ctrl-btn {
+    width: 44px;
+    height: 44px;
+    background: white;
+    border: none;
+    border-radius: 12px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.12);
+    cursor: pointer;
+    font-size: 20px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.15s;
+  }
+  .ctrl-btn:hover { background: #f5f5f5; transform: scale(1.05); }
+  .ctrl-btn:active { transform: scale(0.95); }
+
+  /* Attribution */
+  .attribution {
+    position: absolute;
+    bottom: 4px;
+    left: 4px;
+    font-size: 10px;
+    color: #666;
+    background: rgba(255,255,255,0.8);
+    padding: 2px 6px;
+    border-radius: 4px;
+    z-index: 5;
+  }
+  .attribution a { color: #1a73e8; text-decoration: none; }
+</style>
+</head>
+<body>
+
+<div id="map"></div>
+
+<div class="search-container">
+  <div class="search-box">
+    <input type="text" id="search-input" placeholder="Suchen..." autocomplete="off">
+    <button onclick="doSearch()" title="Suchen">🔍</button>
+  </div>
+  <div class="search-results" id="search-results"></div>
+</div>
+
+<div class="controls">
+  <button class="ctrl-btn" onclick="zoomIn()" title="Reinzoomen">+</button>
+  <button class="ctrl-btn" onclick="zoomOut()" title="Rauszoomen">−</button>
+  <button class="ctrl-btn" onclick="geolocate()" title="Mein Standort">📍</button>
+  <button class="ctrl-btn" onclick="toggleRoute()" title="Route">🧭</button>
+</div>
+
+<div class="route-panel" id="route-panel">
+  <h3>🧭 Route planen</h3>
+  <input type="text" id="route-from" placeholder="Von...">
+  <input type="text" id="route-to" placeholder="Nach...">
+  <button onclick="calcRoute()" style="width:100%;padding:10px;background:#1a73e8;color:white;border:none;border-radius:8px;cursor:pointer;font-size:14px;font-weight:600">Route berechnen</button>
+  <div class="route-info" id="route-info"></div>
+</div>
+
+<div class="attribution">
+  © <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors
+</div>
+
+<script src="https://unpkg.com/maplibre-gl@4.1.2/dist/maplibre-gl.js"></script>
+<script>
+// ========== CONFIG ==========
+// When self-hosted, tiles come from /tiles/
+// Fallback to free tile servers for development
+const TILE_URL = '/tiles/data/germany/{z}/{x}/{y}.pbf';
+const SEARCH_URL = '/search';
+const ROUTE_URL = '/route/route/v1/driving';
+
+// Free fallback style (if self-hosted tiles aren't available)
+const STYLE = {
+  version: 8,
+  name: 'OpenMap',
+  sources: {
+    'osm-tiles': {
+      type: 'raster',
+      tiles: [
+        'https://tile.openstreetmap.org/{z}/{x}/{y}.png'
+      ],
+      tileSize: 256,
+      attribution: '© OpenStreetMap contributors'
+    }
+  },
+  layers: [{
+    id: 'osm',
+    type: 'raster',
+    source: 'osm-tiles',
+    minzoom: 0,
+    maxzoom: 19
+  }]
+};
+
+// ========== MAP INIT ==========
+const map = new maplibregl.Map({
+  container: 'map',
+  style: STYLE,
+  center: [8.4660, 49.4874], // Mannheim
+  zoom: 13,
+  attributionControl: false,
+});
+
+map.addControl(new maplibregl.NavigationControl(), 'bottom-right');
+
+// ========== SEARCH ==========
+let searchTimeout;
+const searchInput = document.getElementById('search-input');
+const searchResults = document.getElementById('search-results');
+
+searchInput.addEventListener('input', () => {
+  clearTimeout(searchTimeout);
+  searchTimeout = setTimeout(doSearch, 300);
+});
+
+searchInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') doSearch();
+  if (e.key === 'Escape') {
+    searchResults.classList.remove('active');
+    searchInput.blur();
+  }
+});
+
+async function doSearch() {
+  const q = searchInput.value.trim();
+  if (q.length < 2) {
+    searchResults.classList.remove('active');
+    return;
+  }
+
+  try {
+    // Try self-hosted Photon first, fallback to public
+    let url = `${SEARCH_URL}?q=${encodeURIComponent(q)}&limit=8&lang=de`;
+    let res = await fetch(url).catch(() => null);
+    
+    if (!res || !res.ok) {
+      // Fallback to public Photon
+      url = `https://photon.komoot.io/api?q=${encodeURIComponent(q)}&limit=8&lang=de`;
+      res = await fetch(url);
+    }
+    
+    const data = await res.json();
+    showResults(data.features || []);
+  } catch (err) {
+    console.error('Search error:', err);
+  }
+}
+
+function showResults(features) {
+  if (!features.length) {
+    searchResults.classList.remove('active');
+    return;
+  }
+
+  searchResults.innerHTML = features.map(f => {
+    const p = f.properties;
+    const name = p.name || p.street || 'Unbekannt';
+    const parts = [p.street, p.city, p.state, p.country].filter(Boolean);
+    const detail = parts.join(', ');
+    const [lon, lat] = f.geometry.coordinates;
+    return `<div class="search-result" onclick="goTo(${lat}, ${lon}, '${name.replace(/'/g, "\\'")}')">
+      <div class="name">${name}</div>
+      <div class="detail">${detail}</div>
+    </div>`;
+  }).join('');
+
+  searchResults.classList.add('active');
+}
+
+function goTo(lat, lon, name) {
+  searchResults.classList.remove('active');
+  searchInput.value = name;
+  
+  // Remove old markers
+  document.querySelectorAll('.maplibregl-marker').forEach(m => m.remove());
+  
+  new maplibregl.Marker({ color: '#e74c3c' })
+    .setLngLat([lon, lat])
+    .setPopup(new maplibregl.Popup().setText(name))
+    .addTo(map);
+  
+  map.flyTo({ center: [lon, lat], zoom: 15, duration: 1500 });
+}
+
+// ========== ROUTING ==========
+function toggleRoute() {
+  document.getElementById('route-panel').classList.toggle('active');
+}
+
+async function calcRoute() {
+  const fromInput = document.getElementById('route-from').value;
+  const toInput = document.getElementById('route-to').value;
+  
+  if (!fromInput || !toInput) return;
+
+  try {
+    // Geocode both inputs
+    const [fromGeo, toGeo] = await Promise.all([
+      geocode(fromInput),
+      geocode(toInput)
+    ]);
+
+    if (!fromGeo || !toGeo) {
+      document.getElementById('route-info').innerHTML = '⚠️ Adresse nicht gefunden';
+      document.getElementById('route-info').classList.add('active');
+      return;
+    }
+
+    // Try self-hosted OSRM, fallback to public
+    let url = `${ROUTE_URL}/${fromGeo.lon},${fromGeo.lat};${toGeo.lon},${toGeo.lat}?overview=full&geometries=geojson`;
+    let res = await fetch(url).catch(() => null);
+    
+    if (!res || !res.ok) {
+      url = `https://router.project-osrm.org/route/v1/driving/${fromGeo.lon},${fromGeo.lat};${toGeo.lon},${toGeo.lat}?overview=full&geometries=geojson`;
+      res = await fetch(url);
+    }
+
+    const data = await res.json();
+    
+    if (data.routes && data.routes.length) {
+      const route = data.routes[0];
+      const mins = Math.round(route.duration / 60);
+      const km = (route.distance / 1000).toFixed(1);
+      
+      // Show route info
+      const info = document.getElementById('route-info');
+      info.innerHTML = `🚗 <strong>${km} km</strong> · ${mins} min`;
+      info.classList.add('active');
+
+      // Draw route on map
+      if (map.getSource('route')) {
+        map.getSource('route').setData(route.geometry);
+      } else {
+        map.addSource('route', { type: 'geojson', data: route.geometry });
+        map.addLayer({
+          id: 'route',
+          type: 'line',
+          source: 'route',
+          paint: {
+            'line-color': '#1a73e8',
+            'line-width': 5,
+            'line-opacity': 0.8
+          }
+        });
+      }
+
+      // Fit map to route
+      const coords = route.geometry.coordinates;
+      const bounds = coords.reduce(
+        (b, c) => b.extend(c),
+        new maplibregl.LngLatBounds(coords[0], coords[0])
+      );
+      map.fitBounds(bounds, { padding: 80, duration: 1000 });
+    }
+  } catch (err) {
+    console.error('Routing error:', err);
+  }
+}
+
+async function geocode(query) {
+  try {
+    let url = `${SEARCH_URL}?q=${encodeURIComponent(query)}&limit=1&lang=de`;
+    let res = await fetch(url).catch(() => null);
+    if (!res || !res.ok) {
+      url = `https://photon.komoot.io/api?q=${encodeURIComponent(query)}&limit=1&lang=de`;
+      res = await fetch(url);
+    }
+    const data = await res.json();
+    if (data.features && data.features.length) {
+      const [lon, lat] = data.features[0].geometry.coordinates;
+      return { lat, lon };
+    }
+  } catch (err) {}
+  return null;
+}
+
+// ========== CONTROLS ==========
+function zoomIn() { map.zoomIn({ duration: 300 }); }
+function zoomOut() { map.zoomOut({ duration: 300 }); }
+function geolocate() {
+  navigator.geolocation.getCurrentPosition(
+    (pos) => {
+      map.flyTo({
+        center: [pos.coords.longitude, pos.coords.latitude],
+        zoom: 15,
+        duration: 1500
+      });
+      new maplibregl.Marker({ color: '#1a73e8' })
+        .setLngLat([pos.coords.longitude, pos.coords.latitude])
+        .addTo(map);
+    },
+    (err) => console.error('Geolocation error:', err)
+  );
+}
+
+// Close search results on click outside
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('.search-container')) {
+    searchResults.classList.remove('active');
+  }
+});
+</script>
+</body>
+</html>

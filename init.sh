@@ -253,8 +253,8 @@ else
     AVAILABLE_RAM_MB=$(awk '/MemAvailable/ {printf "%d", $2/1024}' /proc/meminfo 2>/dev/null || echo "0")
     info "Available RAM: ${AVAILABLE_RAM_MB} MB"
 
-    if [ "${AVAILABLE_RAM_MB}" -lt "2048" ]; then
-        warn "Less than 2GB RAM available — skipping OSRM processing"
+    if [ "${AVAILABLE_RAM_MB}" -lt "6000" ]; then
+        warn "Less than 6GB RAM available — skipping OSRM processing (Germany needs ~6-8GB)"
         warn "Routing will fall back to public router.project-osrm.org"
         OSRM_AVAILABLE=false
         status_set "osrm" "skipped_low_ram"

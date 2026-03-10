@@ -386,10 +386,17 @@ sIn.addEventListener('keydown',e=>{if(e.key==='Enter')doSearch();if(e.key==='Esc
 async function doSearch(){
   const q=sIn.value.trim();if(q.length<2){sRes.classList.remove('active');return;}
   try{
-    let u=SEARCH_URL+'?q='+encodeURIComponent(q)+'&limit=8&lang=de',r=await fetch(u).catch(()=>null);
-    if(!r||!r.ok){u=SEARCH_FALLBACK+'?q='+encodeURIComponent(q)+'&limit=8&lang=de';r=await fetch(u);}
-    showResults((await r.json()).features||[]);
-  }catch(e){}
+    let data;
+    try{
+      let r=await fetch(SEARCH_URL+'?q='+encodeURIComponent(q)+'&limit=8&lang=de');
+      if(r.ok)data=await r.json();
+    }catch(e){}
+    if(!data){
+      let r=await fetch(SEARCH_FALLBACK+'?q='+encodeURIComponent(q)+'&limit=8&lang=de');
+      data=await r.json();
+    }
+    showResults(data.features||[]);
+  }catch(e){console.error('Search error:',e);}
 }
 function showResults(f){
   if(!f.length){sRes.classList.remove('active');return;}
@@ -410,10 +417,16 @@ function toggleRoute(){
 }
 
 async function fetchRoute(from,to){
-  let u=ROUTE_URL+'/'+from.lon+','+from.lat+';'+to.lon+','+to.lat+'?overview=full&geometries=geojson&steps=true';
-  let r=await fetch(u).catch(()=>null);
-  if(!r||!r.ok){u=ROUTE_FALLBACK+'/'+from.lon+','+from.lat+';'+to.lon+','+to.lat+'?overview=full&geometries=geojson&steps=true';r=await fetch(u);}
-  return await r.json();
+  let data;
+  try{
+    let r=await fetch(ROUTE_URL+'/'+from.lon+','+from.lat+';'+to.lon+','+to.lat+'?overview=full&geometries=geojson&steps=true');
+    if(r.ok)data=await r.json();
+  }catch(e){}
+  if(!data){
+    let r=await fetch(ROUTE_FALLBACK+'/'+from.lon+','+from.lat+';'+to.lon+','+to.lat+'?overview=full&geometries=geojson&steps=true');
+    data=await r.json();
+  }
+  return data;
 }
 
 async function calcRoute(){
@@ -447,10 +460,16 @@ async function calcRoute(){
 
 async function geocode(q){
   try{
-    let u=SEARCH_URL+'?q='+encodeURIComponent(q)+'&limit=1&lang=de',r=await fetch(u).catch(()=>null);
-    if(!r||!r.ok){u=SEARCH_FALLBACK+'?q='+encodeURIComponent(q)+'&limit=1&lang=de';r=await fetch(u);}
-    const d=await r.json();
-    if(d.features?.length){const[lon,lat]=d.features[0].geometry.coordinates;return{lat,lon};}
+    let data;
+    try{
+      let r=await fetch(SEARCH_URL+'?q='+encodeURIComponent(q)+'&limit=1&lang=de');
+      if(r.ok)data=await r.json();
+    }catch(e){}
+    if(!data){
+      let r=await fetch(SEARCH_FALLBACK+'?q='+encodeURIComponent(q)+'&limit=1&lang=de');
+      data=await r.json();
+    }
+    if(data.features?.length){const[lon,lat]=data.features[0].geometry.coordinates;return{lat,lon};}
   }catch(e){}
   return null;
 }
